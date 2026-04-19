@@ -12,8 +12,16 @@ PROJECT_ROOT = os.getenv("NOAH_PROJECT_ROOT", ".")
 async def lifespan(app: FastAPI):
     import threading
     from scanner import scan_project
-    thread = threading.Thread(target=scan_project, args=(PROJECT_ROOT,), daemon=True)
-    thread.start()
+    from watcher import start_watcher
+
+    # Start scanner in background
+    scan_thread = threading.Thread(target=scan_project, args=(PROJECT_ROOT,), daemon=True)
+    scan_thread.start()
+
+    # Start watcher in background
+    watch_thread = threading.Thread(target=start_watcher, args=(PROJECT_ROOT,), daemon=True)
+    watch_thread.start()
+
     yield
 
 app = FastAPI(title="Noah Daemon", version="0.3.0", lifespan=lifespan)
@@ -67,11 +75,26 @@ def trigger_scan(force: bool = False):
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    from memory import query_memory
+    from memory import query_memory, get_recent_memories
     from agent import answer_question
-    memories = query_memory(PROJECT_ROOT, req.question)
-    answer = answer_question(req.question, memories)
-    return {"answer": answer, "memories_used": len(memories)}
+
+    # Get semantically relevant memories
+    semantic_memories = query_memory(PROJECT_ROOT, req.question, n_results=5)
+    
+    # Also get the 3 most recent memories
+    recent_memories = get_recent_memories(PROJECT_ROOT, limit=3)
+    
+    # Merge, deduplicate by id, keep recent ones
+    seen = set()
+    merged = []
+    for m in recent_memories + semantic_memories:
+        mid = m.get('id') or m.get('summary')
+        if mid not in seen:
+            seen.add(mid)
+            merged.append(m)
+
+    answer = answer_question(req.question, merged)
+    return {"answer": answer, "memories_used": len(merged)}
 
 @app.get("/memory")
 def get_memory(limit: int = Query(default=20, le=100)):
@@ -89,4 +112,4 @@ def forge(req: ForgeRequest):
     return {"plan": "[stub] Forge plan will go here"}
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="127.0.0.1", port=7878, reload=True)
+    uvicorn.run("server:app", host="127.0.0.1", port=7878, reload=False)

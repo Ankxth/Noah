@@ -33,9 +33,12 @@ def summarize_change(file_path: str, diff: str, context: str = "") -> str:
     return ask_llm(prompt, system=system)
 
 def answer_question(question: str, memories: list, profile: dict = {}) -> str:
+    # Sort by timestamp so recent changes appear first
+    sorted_memories = sorted(memories, key=lambda m: m.get('timestamp', ''), reverse=True)
+
     memory_text = "\n".join([
-        f"- [{m['timestamp'][:10]}] {m['file']}: {m['summary']}"
-        for m in memories
+        f"- [{m['timestamp'][:16]}] {m['file']}: {m['summary']}"
+        for m in sorted_memories
     ]) or "No relevant memories found."
 
     profile_text = ""
@@ -44,11 +47,14 @@ def answer_question(question: str, memories: list, profile: dict = {}) -> str:
 
     system = (
         "You are Noah, an AI coding companion with deep knowledge of this developer's codebase. "
-        "Answer questions using the memory context provided. Be concise and specific."
+        "Answer questions using the memory context provided. "
+        "Memories are sorted newest first. "
+        "For questions about 'last', 'recent', or 'latest' changes, use the most recent memory. "
+        "Be concise and specific."
     )
     prompt = (
         f"Question: {question}\n\n"
-        f"Relevant memories:\n{memory_text}"
+        f"Relevant memories (newest first):\n{memory_text}"
         f"{profile_text}"
     )
 
