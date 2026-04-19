@@ -4,8 +4,19 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 import os
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Noah Daemon", version="0.2.0")
+PROJECT_ROOT = os.getenv("NOAH_PROJECT_ROOT", ".")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import threading
+    from scanner import scan_project
+    thread = threading.Thread(target=scan_project, args=(PROJECT_ROOT,), daemon=True)
+    thread.start()
+    yield
+
+app = FastAPI(title="Noah Daemon", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -13,8 +24,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-PROJECT_ROOT = os.getenv("NOAH_PROJECT_ROOT", ".")
 
 class AskRequest(BaseModel):
     question: str
@@ -39,6 +48,22 @@ def status():
         "project_root": PROJECT_ROOT,
         "memory_count": col.count()
     }
+@app.post("/scan")
+def trigger_scan(force: bool = False):
+    import threading
+    from scanner import scan_project
+    from memory import mark_project_scanned
+    from pathlib import Path
+    
+    if force:
+        # Remove the flag so it rescans
+        flag = Path(PROJECT_ROOT) / ".noah" / "scanned.flag"
+        if flag.exists():
+            flag.unlink()
+    
+    thread = threading.Thread(target=scan_project, args=(PROJECT_ROOT,), daemon=True)
+    thread.start()
+    return {"status": "scan started", "project_root": PROJECT_ROOT}
 
 @app.post("/ask")
 def ask(req: AskRequest):

@@ -82,3 +82,11 @@ def get_recent_memories(project_root: str, limit: int = 20):
         except json.JSONDecodeError:
             continue
     return recent
+
+def is_project_scanned(project_root: str) -> bool:
+    flag = Path(project_root) / ".noah" / "scanned.flag"
+    return flag.exists()
+
+def mark_project_scanned(project_root: str):
+    flag = Path(project_root) / ".noah" / "scanned.flag"
+    flag.touch()
