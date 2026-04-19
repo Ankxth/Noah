@@ -76,84 +76,182 @@ async function askNoah(question: string): Promise<string> {
         return 'Noah daemon is offline. Start it with: python server.py';
     }
 }
+async function handleAction(action: string, webviewView: vscode.WebviewView) {
+    const post = (msg: string, answer?: string) =>
+        webviewView.webview.postMessage({ type: 'actionResult', message: msg, answer });
 
+    if (action === 'scan') {
+        try {
+            await fetch(`${DAEMON_URL}/scan?force=true`, { method: 'POST' });
+            post('Scan started! Watch the status bar for updates.');
+        } catch { post('Daemon offline.'); }
+    }
+    else if (action === 'summary') {
+        const answer = await askNoah('What is this project about? Give a detailed summary.');
+        post('Done.', answer);
+    }
+    else if (action === 'recent') {
+        const answer = await askNoah('What have I been working on recently? List the last 5 changes.');
+        post('Done.', answer);
+    }
+    else if (action === 'patterns') {
+        const answer = await askNoah('What coding patterns, libraries, and conventions do I use in this project?');
+        post('Done.', answer);
+    }
+    else if (action === 'readme') {
+        const answer = await askNoah('Generate a README.md for this project based on what you know about it. Include project description, tech stack, and setup instructions.');
+        post('Done.', answer);
+    }
+}
 class NoahSidebarProvider implements vscode.WebviewViewProvider {
     constructor(private readonly extensionUri: vscode.Uri) {}
 
     resolveWebviewView(webviewView: vscode.WebviewView) {
-        webviewView.webview.options = { enableScripts: true };
-        webviewView.webview.html = this.getHtml();
+    webviewView.webview.options = { enableScripts: true };
+    webviewView.webview.html = this.getHtml();
 
-        webviewView.webview.onDidReceiveMessage(async (message) => {
-            if (message.type === 'ask') {
-                const answer = await askNoah(message.question);
-                webviewView.webview.postMessage({ type: 'answer', answer });
+    webviewView.webview.onDidReceiveMessage(async (message) => {
+        if (message.type === 'ask') {
+            const answer = await askNoah(message.question);
+            webviewView.webview.postMessage({ type: 'answer', answer });
+        }
+        if (message.type === 'getMemory') {
+            try {
+                const res = await fetch(`${DAEMON_URL}/memory?limit=50`);
+                const data = await res.json();
+                webviewView.webview.postMessage({ type: 'memory', data });
+            } catch {
+                webviewView.webview.postMessage({ type: 'memory', data: { memories: [] } });
             }
-            if (message.type === 'getMemory') {
-                try {
-                    const res = await fetch(`${DAEMON_URL}/memory?limit=20`);
-                    const data = await res.json();
-                    webviewView.webview.postMessage({ type: 'memory', data });
-                } catch {
-                    webviewView.webview.postMessage({ type: 'memory', data: { memories: [] } });
-                }
-            }
-        });
-    }
+        }
+        if (message.type === 'action') {
+            await handleAction(message.action, webviewView);
+        }
+    });
+}
+    
 
     private getHtml(): string {
-        return `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { font-family: var(--vscode-font-family); font-size: 13px; padding: 8px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); margin: 0; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
-  .tab { padding: 4px 12px; cursor: pointer; border-radius: 4px; border: 1px solid var(--vscode-button-border, transparent); background: transparent; color: var(--vscode-foreground); font-size: 12px; }
-  .tab.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-  .panel { display: none; }
-  .panel.active { display: block; }
-  #chat-messages { height: 340px; overflow-y: auto; margin-bottom: 8px; display: flex; flex-direction: column; gap: 8px; }
-  .msg { padding: 6px 10px; border-radius: 6px; max-width: 90%; line-height: 1.4; }
-  .msg.user { background: var(--vscode-button-background); color: var(--vscode-button-foreground); align-self: flex-end; }
-  .msg.noah { background: var(--vscode-editor-inactiveSelectionBackground); align-self: flex-start; }
-  .input-row { display: flex; gap: 4px; }
-  input[type=text] { flex: 1; padding: 5px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; font-size: 12px; }
-  button.send { padding: 5px 10px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  .memory-item { padding: 6px 8px; border-left: 2px solid var(--vscode-button-background); margin-bottom: 6px; font-size: 11px; line-height: 1.4; }
-  .memory-file { color: var(--vscode-descriptionForeground); margin-top: 2px; }
-  .loading { color: var(--vscode-descriptionForeground); font-style: italic; font-size: 12px; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--vscode-font-family); font-size: 13px; color: var(--vscode-foreground); background: transparent; height: 100vh; display: flex; flex-direction: column; }
+  .tabs { display: flex; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0; }
+  .tab { flex: 1; padding: 8px 4px; cursor: pointer; border: none; background: transparent; color: var(--vscode-foreground); font-size: 12px; opacity: 0.6; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab.active { opacity: 1; border-bottom-color: var(--vscode-focusBorder); }
+  .panel { display: none; flex: 1; flex-direction: column; overflow: hidden; padding: 8px; }
+  .panel.active { display: flex; }
+
+  /* Chat */
+  #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding-right: 2px; }
+  .msg { padding: 7px 10px; border-radius: 8px; max-width: 92%; line-height: 1.5; font-size: 12px; word-wrap: break-word; }
+  .msg.user { background: var(--vscode-button-background); color: var(--vscode-button-foreground); align-self: flex-end; border-bottom-right-radius: 2px; }
+  .msg.noah { background: var(--vscode-editor-inactiveSelectionBackground); align-self: flex-start; border-bottom-left-radius: 2px; }
+  .msg.thinking { opacity: 0.6; font-style: italic; }
+  .input-row { display: flex; gap: 4px; flex-shrink: 0; }
+  .input-row input { flex: 1; padding: 6px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; font-size: 12px; font-family: inherit; }
+  .input-row input:focus { outline: 1px solid var(--vscode-focusBorder); }
+  .btn { padding: 6px 10px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  .btn:hover { background: var(--vscode-button-hoverBackground); }
+  .btn.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+  .btn.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+
+  /* Memory */
+  #memory-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .memory-item { padding: 8px 10px; border-left: 2px solid var(--vscode-focusBorder); background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 0 6px 6px 0; }
+  .memory-summary { font-size: 12px; line-height: 1.4; margin-bottom: 4px; }
+  .memory-meta { display: flex; gap: 8px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .memory-tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
+  .memory-controls { display: flex; gap: 4px; margin-bottom: 8px; flex-shrink: 0; }
+  .memory-controls input { flex: 1; padding: 5px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; font-size: 12px; }
+
+  /* Actions */
+  #actions-panel { gap: 8px; }
+  .action-group { margin-bottom: 4px; }
+  .action-group-title { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .action-btn { width: 100%; padding: 8px 12px; margin-bottom: 4px; text-align: left; background: var(--vscode-editor-inactiveSelectionBackground); color: var(--vscode-foreground); border: 1px solid var(--vscode-panel-border); border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; display: flex; align-items: center; gap: 8px; }
+  .action-btn:hover { background: var(--vscode-list-hoverBackground); border-color: var(--vscode-focusBorder); }
+  .action-btn .icon { font-size: 14px; width: 18px; text-align: center; }
+  .action-btn .desc { font-size: 11px; color: var(--vscode-descriptionForeground); display: block; margin-top: 1px; }
+  .status-msg { font-size: 11px; color: var(--vscode-descriptionForeground); padding: 6px 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; margin-top: 4px; display: none; }
+  .status-msg.show { display: block; }
+  .empty { color: var(--vscode-descriptionForeground); font-size: 12px; font-style: italic; text-align: center; padding: 20px; }
 </style>
 </head>
 <body>
 <div class="tabs">
-  <button class="tab active" onclick="showTab('chat')">Chat</button>
-  <button class="tab" onclick="showTab('memory')">Memory</button>
+  <button class="tab active" onclick="showTab('chat')">💬 Chat</button>
+  <button class="tab" onclick="showTab('memory')">🧠 Memory</button>
+  <button class="tab" onclick="showTab('actions')">⚡ Actions</button>
 </div>
 
+<!-- Chat Panel -->
 <div id="chat" class="panel active">
   <div id="chat-messages">
-    <div class="msg noah">Hi! I'm Noah. Ask me anything about your project.</div>
+    <div class="msg noah">Hi! I'm Noah. I know your codebase. Ask me anything.</div>
   </div>
   <div class="input-row">
-    <input type="text" id="chat-input" placeholder="Ask Noah..." onkeydown="if(event.key==='Enter') sendMessage()"/>
-    <button class="send" onclick="sendMessage()">Ask</button>
+    <input type="text" id="chat-input" placeholder="Ask Noah..." onkeydown="if(event.key==='Enter')sendMessage()"/>
+    <button class="btn" onclick="sendMessage()">Ask</button>
   </div>
 </div>
 
+<!-- Memory Panel -->
 <div id="memory" class="panel">
-  <div id="memory-list"><div class="loading">Loading memories...</div></div>
+  <div class="memory-controls">
+    <input type="text" id="memory-search" placeholder="Search memories..." oninput="filterMemories(this.value)"/>
+    <button class="btn secondary" onclick="loadMemory()">↻</button>
+  </div>
+  <div id="memory-list"><div class="empty">Loading memories...</div></div>
+</div>
+
+<!-- Actions Panel -->
+<div id="actions-panel" class="panel">
+  <div class="action-group">
+    <div class="action-group-title">Project</div>
+    <button class="action-btn" onclick="runAction('scan')">
+      <span class="icon">🔍</span>
+      <span><strong>Scan project</strong><span class="desc">Re-index all files into memory</span></span>
+    </button>
+    <button class="action-btn" onclick="runAction('readme')">
+      <span class="icon">📄</span>
+      <span><strong>Generate README</strong><span class="desc">Auto-write README from project context</span></span>
+    </button>
+    <button class="action-btn" onclick="runAction('summary')">
+      <span class="icon">📊</span>
+      <span><strong>Project summary</strong><span class="desc">What is this project about?</span></span>
+    </button>
+  </div>
+  <div class="action-group">
+    <div class="action-group-title">Memory</div>
+    <button class="action-btn" onclick="runAction('recent')">
+      <span class="icon">🕐</span>
+      <span><strong>Recent changes</strong><span class="desc">What have I worked on lately?</span></span>
+    </button>
+    <button class="action-btn" onclick="runAction('patterns')">
+      <span class="icon">🔎</span>
+      <span><strong>My coding patterns</strong><span class="desc">What patterns do I follow?</span></span>
+    </button>
+  </div>
+  <div id="action-status" class="status-msg"></div>
 </div>
 
 <script>
   const vscode = acquireVsCodeApi();
+  let allMemories = [];
 
   function showTab(name) {
-    document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['chat','memory'][i] === name));
+    document.querySelectorAll('.tab').forEach((t, i) => {
+      t.classList.toggle('active', ['chat','memory','actions-panel'][i] === name || t.textContent.toLowerCase().includes(name));
+    });
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    document.getElementById(name).classList.add('active');
-    if (name === 'memory') vscode.postMessage({ type: 'getMemory' });
+    const panel = name === 'actions' ? document.getElementById('actions-panel') : document.getElementById(name);
+    if (panel) panel.classList.add('active');
+    if (name === 'memory') loadMemory();
   }
 
   function sendMessage() {
@@ -162,13 +260,13 @@ class NoahSidebarProvider implements vscode.WebviewViewProvider {
     if (!q) return;
     addMessage(q, 'user');
     input.value = '';
-    addMessage('Thinking...', 'noah', 'thinking');
+    addMessage('Thinking...', 'noah thinking', 'thinking-msg');
     vscode.postMessage({ type: 'ask', question: q });
   }
 
-  function addMessage(text, role, id) {
+  function addMessage(text, cls, id) {
     const div = document.createElement('div');
-    div.className = 'msg ' + role;
+    div.className = 'msg ' + cls;
     if (id) div.id = id;
     div.textContent = text;
     const msgs = document.getElementById('chat-messages');
@@ -176,32 +274,79 @@ class NoahSidebarProvider implements vscode.WebviewViewProvider {
     msgs.scrollTop = msgs.scrollHeight;
   }
 
+  function loadMemory() {
+    vscode.postMessage({ type: 'getMemory' });
+  }
+
+  function filterMemories(query) {
+    const q = query.toLowerCase();
+    const filtered = q ? allMemories.filter(m =>
+      m.summary.toLowerCase().includes(q) || m.file.toLowerCase().includes(q)
+    ) : allMemories;
+    renderMemories(filtered);
+  }
+
+  function renderMemories(memories) {
+    const list = document.getElementById('memory-list');
+    if (!memories.length) {
+      list.innerHTML = '<div class="empty">No memories yet. Save some files!</div>';
+      return;
+    }
+    list.innerHTML = memories.map(m => {
+      const tags = (m.tags || []).map(t => '<span class="memory-tag">' + t + '</span>').join('');
+      return '<div class="memory-item">' +
+        '<div class="memory-summary">' + escHtml(m.summary) + '</div>' +
+        '<div class="memory-meta">' +
+          '<span>' + escHtml(m.file) + '</span>' +
+          '<span>' + (m.timestamp || '').slice(0,16).replace('T',' ') + '</span>' +
+          tags +
+        '</div></div>';
+    }).join('');
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function runAction(type) {
+    const status = document.getElementById('action-status');
+    status.className = 'status-msg show';
+    const messages = {
+      scan: 'Scanning project...',
+      readme: 'Generating README...',
+      summary: 'Summarizing project...',
+      recent: 'Loading recent changes...',
+      patterns: 'Analyzing coding patterns...'
+    };
+    status.textContent = messages[type] || 'Running...';
+    vscode.postMessage({ type: 'action', action: type });
+  }
+
   window.addEventListener('message', e => {
     const msg = e.data;
     if (msg.type === 'answer') {
-      const thinking = document.getElementById('thinking');
-      if (thinking) thinking.remove();
+      const t = document.getElementById('thinking-msg');
+      if (t) t.remove();
       addMessage(msg.answer, 'noah');
     }
     if (msg.type === 'memory') {
-      const list = document.getElementById('memory-list');
-      const memories = msg.data.memories || [];
-      if (memories.length === 0) {
-        list.innerHTML = '<div class="loading">No memories yet. Save some files!</div>';
-        return;
+      allMemories = msg.data.memories || [];
+      renderMemories(allMemories);
+    }
+    if (msg.type === 'actionResult') {
+      const status = document.getElementById('action-status');
+      status.textContent = msg.message || 'Done.';
+      if (msg.answer) {
+        showTab('chat');
+        addMessage(msg.answer, 'noah');
       }
-      list.innerHTML = memories.map(m => \`
-        <div class="memory-item">
-          \${m.summary}
-          <div class="memory-file">\${m.file} · \${m.timestamp.slice(0,10)}</div>
-        </div>
-      \`).join('');
+      setTimeout(() => status.classList.remove('show'), 3000);
     }
   });
 </script>
 </body>
 </html>`;
-    }
+}
 }
 
 export function deactivate() {}
