@@ -9,15 +9,26 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      {
-        "command": "noah.ask",
-        "title": "Ask Noah"
-      },
-      {
-        "command": "noah.showPanel",
-        "title": "Noah: Open Panel"
-      }
+      { "command": "noah.ask", "title": "Noah: Ask" },
+      { "command": "noah.showPanel", "title": "Noah: Open Panel" },
+      { "command": "noah.askAboutSelection", "title": "Ask Noah about this" },
+      { "command": "noah.fixSelection", "title": "Fix with Noah" },
+      { "command": "noah.askAboutLine", "title": "Noah: Explain line" }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "noah.askAboutSelection",
+          "group": "noah@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "noah.fixSelection",
+          "group": "noah@2",
+          "when": "editorHasSelection"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {

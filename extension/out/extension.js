@@ -37,23 +37,21 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const DAEMON_URL = 'http://localhost:7878';
+let sidebarProvider;
 function activate(context) {
     console.log('[Noah] Activating...');
-    // Status bar item
     const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.text = '$(hubot) Noah: Starting...';
     statusBar.tooltip = 'Noah AI Companion';
     statusBar.command = 'noah.showPanel';
     statusBar.show();
     context.subscriptions.push(statusBar);
-    // Check daemon status
     checkDaemon(statusBar);
     const interval = setInterval(() => checkDaemon(statusBar), 10000);
     context.subscriptions.push({ dispose: () => clearInterval(interval) });
-    // Register sidebar webview
-    const provider = new NoahSidebarProvider(context.extensionUri);
-    context.subscriptions.push(vscode.window.registerWebviewViewProvider('noah.chatView', provider));
-    // Commands
+    sidebarProvider = new NoahSidebarProvider(context.extensionUri);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider('noah.chatView', sidebarProvider));
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file', language: '*' }, new NoahCodeLensProvider()));
     context.subscriptions.push(vscode.commands.registerCommand('noah.showPanel', () => {
         vscode.commands.executeCommand('workbench.view.extension.noah-sidebar');
     }));
@@ -62,10 +60,75 @@ function activate(context) {
             prompt: 'Ask Noah anything about your project',
             placeHolder: 'Why did I change auth.py last week?'
         });
-        if (!question)
+        if (!question) {
             return;
+        }
         const answer = await askNoah(question);
         vscode.window.showInformationMessage(`Noah: ${answer}`);
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('noah.askAboutSelection', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            return;
+        }
+        const selection = editor.document.getText(editor.selection);
+        if (!selection) {
+            vscode.window.showInformationMessage('Select some code first.');
+            return;
+        }
+        await vscode.commands.executeCommand('workbench.view.extension.noah-sidebar');
+        const filePath = vscode.workspace.asRelativePath(editor.document.fileName);
+        await sidebarProvider?.postMessage({
+            type: 'externalAnswer',
+            question: `Explain selection in ${filePath}`,
+            answer: null
+        });
+        const answer = await askNoah(`Explain this code from ${filePath}:\n\n${selection}`);
+        await sidebarProvider?.postMessage({
+            type: 'externalAnswer',
+            question: null,
+            answer
+        });
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('noah.fixSelection', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            return;
+        }
+        const selection = editor.document.getText(editor.selection);
+        if (!selection) {
+            return;
+        }
+        await vscode.commands.executeCommand('workbench.view.extension.noah-sidebar');
+        const filePath = vscode.workspace.asRelativePath(editor.document.fileName);
+        await sidebarProvider?.postMessage({
+            type: 'fixProposal',
+            question: `Fix code in ${filePath}`,
+            answer: null
+        });
+        const answer = await askNoah(`Analyze this code from ${filePath} for bugs or issues. Explain what is wrong and provide the fixed version clearly marked with FIXED CODE:\n\n${selection}`);
+        await sidebarProvider?.postMessage({
+            type: 'fixProposal',
+            question: null,
+            answer,
+            filePath: editor.document.fileName,
+            selectionStart: { line: editor.selection.start.line, character: editor.selection.start.character },
+            selectionEnd: { line: editor.selection.end.line, character: editor.selection.end.character }
+        });
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('noah.askAboutLine', async (file, line, code) => {
+        await vscode.commands.executeCommand('workbench.view.extension.noah-sidebar');
+        await sidebarProvider?.postMessage({
+            type: 'externalAnswer',
+            question: `Explain line ${line} in ${file}`,
+            answer: null
+        });
+        const answer = await askNoah(`In ${file} at line ${line}, explain this: ${code}`);
+        await sidebarProvider?.postMessage({
+            type: 'externalAnswer',
+            question: null,
+            answer
+        });
     }));
     console.log('[Noah] Active');
 }
@@ -100,6 +163,16 @@ async function askNoah(question) {
         return 'Noah daemon is offline. Start it with: python server.py';
     }
 }
+async function applyFix(message) {
+    const uri = vscode.Uri.file(message.filePath);
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const editor = await vscode.window.showTextDocument(doc);
+    const range = new vscode.Range(message.selectionStart.line, message.selectionStart.character, message.selectionEnd.line, message.selectionEnd.character);
+    await editor.edit(editBuilder => {
+        editBuilder.replace(range, message.fixedCode);
+    });
+    vscode.window.showInformationMessage('Noah applied the fix.');
+}
 async function handleAction(action, webviewView) {
     const post = (msg, answer) => webviewView.webview.postMessage({ type: 'actionResult', message: msg, answer });
     if (action === 'scan') {
@@ -124,8 +197,34 @@ async function handleAction(action, webviewView) {
         post('Done.', answer);
     }
     else if (action === 'readme') {
-        const answer = await askNoah('Generate a README.md for this project based on what you know about it. Include project description, tech stack, and setup instructions.');
+        const answer = await askNoah('Generate a README.md for this project. Include description, tech stack, and setup instructions.');
         post('Done.', answer);
+    }
+}
+class NoahCodeLensProvider {
+    async provideCodeLenses(document) {
+        const lenses = [];
+        const lines = document.getText().split('\n');
+        const patterns = [
+            /^(async\s+)?def\s+\w+/,
+            /^(export\s+)?(async\s+)?function\s+\w+/,
+            /^(export\s+)?(default\s+)?class\s+\w+/,
+            /^\s*(public|private|protected)?\s*(async\s+)?\w+\s*\(/
+        ];
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!patterns.some(p => p.test(line.trim()))) {
+                continue;
+            }
+            const range = new vscode.Range(i, 0, i, line.length);
+            const fileName = vscode.workspace.asRelativePath(document.fileName);
+            lenses.push(new vscode.CodeLens(range, {
+                title: '$(hubot) Ask Noah about this',
+                command: 'noah.askAboutLine',
+                arguments: [fileName, i + 1, line.trim()]
+            }));
+        }
+        return lenses;
     }
 }
 class NoahSidebarProvider {
@@ -133,7 +232,14 @@ class NoahSidebarProvider {
     constructor(extensionUri) {
         this.extensionUri = extensionUri;
     }
+    _view;
+    async postMessage(message) {
+        if (this._view) {
+            await this._view.webview.postMessage(message);
+        }
+    }
     resolveWebviewView(webviewView) {
+        this._view = webviewView;
         webviewView.webview.options = { enableScripts: true };
         webviewView.webview.html = this.getHtml();
         webviewView.webview.onDidReceiveMessage(async (message) => {
@@ -154,6 +260,9 @@ class NoahSidebarProvider {
             if (message.type === 'action') {
                 await handleAction(message.action, webviewView);
             }
+            if (message.type === 'applyFix') {
+                await applyFix(message);
+            }
         });
     }
     getHtml() {
@@ -170,8 +279,6 @@ class NoahSidebarProvider {
   .tab.active { opacity: 1; border-bottom-color: var(--vscode-focusBorder); }
   .panel { display: none; flex: 1; flex-direction: column; overflow: hidden; padding: 8px; }
   .panel.active { display: flex; }
-
-  /* Chat */
   #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding-right: 2px; }
   .msg { padding: 7px 10px; border-radius: 8px; max-width: 92%; line-height: 1.5; font-size: 12px; word-wrap: break-word; }
   .msg.user { background: var(--vscode-button-background); color: var(--vscode-button-foreground); align-self: flex-end; border-bottom-right-radius: 2px; }
@@ -184,8 +291,6 @@ class NoahSidebarProvider {
   .btn:hover { background: var(--vscode-button-hoverBackground); }
   .btn.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
   .btn.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
-
-  /* Memory */
   #memory-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
   .memory-item { padding: 8px 10px; border-left: 2px solid var(--vscode-focusBorder); background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 0 6px 6px 0; }
   .memory-summary { font-size: 12px; line-height: 1.4; margin-bottom: 4px; }
@@ -193,8 +298,6 @@ class NoahSidebarProvider {
   .memory-tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 5px; border-radius: 3px; font-size: 10px; }
   .memory-controls { display: flex; gap: 4px; margin-bottom: 8px; flex-shrink: 0; }
   .memory-controls input { flex: 1; padding: 5px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; font-size: 12px; }
-
-  /* Actions */
   #actions-panel { gap: 8px; }
   .action-group { margin-bottom: 4px; }
   .action-group-title { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -205,66 +308,60 @@ class NoahSidebarProvider {
   .status-msg { font-size: 11px; color: var(--vscode-descriptionForeground); padding: 6px 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; margin-top: 4px; display: none; }
   .status-msg.show { display: block; }
   .empty { color: var(--vscode-descriptionForeground); font-size: 12px; font-style: italic; text-align: center; padding: 20px; }
+  .fix-actions { display: flex; gap: 6px; margin-top: 2px; padding-left: 4px; }
 </style>
 </head>
 <body>
 <div class="tabs">
-  <button class="tab active" onclick="showTab('chat')">💬 Chat</button>
-  <button class="tab" onclick="showTab('memory')">🧠 Memory</button>
-  <button class="tab" onclick="showTab('actions')">⚡ Actions</button>
+  <button class="tab active" onclick="showTab('chat')">&#x1F4AC; Chat</button>
+  <button class="tab" onclick="showTab('memory')">&#x1F9E0; Memory</button>
+  <button class="tab" onclick="showTab('actions')">&#x26A1; Actions</button>
 </div>
-
-<!-- Chat Panel -->
 <div id="chat" class="panel active">
   <div id="chat-messages">
-    <div class="msg noah">Hi! I'm Noah. I know your codebase. Ask me anything.</div>
+    <div class="msg noah">Hi! I am Noah. I know your codebase. Ask me anything.</div>
   </div>
   <div class="input-row">
     <input type="text" id="chat-input" placeholder="Ask Noah..." onkeydown="if(event.key==='Enter')sendMessage()"/>
     <button class="btn" onclick="sendMessage()">Ask</button>
   </div>
 </div>
-
-<!-- Memory Panel -->
 <div id="memory" class="panel">
   <div class="memory-controls">
     <input type="text" id="memory-search" placeholder="Search memories..." oninput="filterMemories(this.value)"/>
-    <button class="btn secondary" onclick="loadMemory()">↻</button>
+    <button class="btn secondary" onclick="loadMemory()">&#x21BB;</button>
   </div>
   <div id="memory-list"><div class="empty">Loading memories...</div></div>
 </div>
-
-<!-- Actions Panel -->
 <div id="actions-panel" class="panel">
   <div class="action-group">
     <div class="action-group-title">Project</div>
     <button class="action-btn" onclick="runAction('scan')">
-      <span class="icon">🔍</span>
+      <span class="icon">&#x1F50D;</span>
       <span><strong>Scan project</strong><span class="desc">Re-index all files into memory</span></span>
     </button>
     <button class="action-btn" onclick="runAction('readme')">
-      <span class="icon">📄</span>
+      <span class="icon">&#x1F4C4;</span>
       <span><strong>Generate README</strong><span class="desc">Auto-write README from project context</span></span>
     </button>
     <button class="action-btn" onclick="runAction('summary')">
-      <span class="icon">📊</span>
+      <span class="icon">&#x1F4CA;</span>
       <span><strong>Project summary</strong><span class="desc">What is this project about?</span></span>
     </button>
   </div>
   <div class="action-group">
     <div class="action-group-title">Memory</div>
     <button class="action-btn" onclick="runAction('recent')">
-      <span class="icon">🕐</span>
+      <span class="icon">&#x1F550;</span>
       <span><strong>Recent changes</strong><span class="desc">What have I worked on lately?</span></span>
     </button>
     <button class="action-btn" onclick="runAction('patterns')">
-      <span class="icon">🔎</span>
+      <span class="icon">&#x1F50E;</span>
       <span><strong>My coding patterns</strong><span class="desc">What patterns do I follow?</span></span>
     </button>
   </div>
   <div id="action-status" class="status-msg"></div>
 </div>
-
 <script>
   const vscode = acquireVsCodeApi();
   let allMemories = [];
@@ -275,14 +372,14 @@ class NoahSidebarProvider {
     });
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     const panel = name === 'actions' ? document.getElementById('actions-panel') : document.getElementById(name);
-    if (panel) panel.classList.add('active');
-    if (name === 'memory') loadMemory();
+    if (panel) { panel.classList.add('active'); }
+    if (name === 'memory') { loadMemory(); }
   }
 
   function sendMessage() {
     const input = document.getElementById('chat-input');
     const q = input.value.trim();
-    if (!q) return;
+    if (!q) { return; }
     addMessage(q, 'user');
     input.value = '';
     addMessage('Thinking...', 'noah thinking', 'thinking-msg');
@@ -292,11 +389,12 @@ class NoahSidebarProvider {
   function addMessage(text, cls, id) {
     const div = document.createElement('div');
     div.className = 'msg ' + cls;
-    if (id) div.id = id;
+    if (id) { div.id = id; }
     div.textContent = text;
     const msgs = document.getElementById('chat-messages');
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
+    return div;
   }
 
   function loadMemory() {
@@ -336,36 +434,95 @@ class NoahSidebarProvider {
   function runAction(type) {
     const status = document.getElementById('action-status');
     status.className = 'status-msg show';
-    const messages = {
-      scan: 'Scanning project...',
-      readme: 'Generating README...',
-      summary: 'Summarizing project...',
-      recent: 'Loading recent changes...',
-      patterns: 'Analyzing coding patterns...'
-    };
+    const messages = { scan: 'Scanning project...', readme: 'Generating README...', summary: 'Summarizing project...', recent: 'Loading recent changes...', patterns: 'Analyzing coding patterns...' };
     status.textContent = messages[type] || 'Running...';
     vscode.postMessage({ type: 'action', action: type });
   }
 
   window.addEventListener('message', e => {
     const msg = e.data;
+
     if (msg.type === 'answer') {
       const t = document.getElementById('thinking-msg');
-      if (t) t.remove();
+      if (t) { t.remove(); }
       addMessage(msg.answer, 'noah');
     }
+
     if (msg.type === 'memory') {
       allMemories = msg.data.memories || [];
       renderMemories(allMemories);
     }
+
     if (msg.type === 'actionResult') {
       const status = document.getElementById('action-status');
       status.textContent = msg.message || 'Done.';
-      if (msg.answer) {
+      if (msg.answer) { showTab('chat'); addMessage(msg.answer, 'noah'); }
+      setTimeout(() => status.classList.remove('show'), 3000);
+    }
+
+    if (msg.type === 'externalAnswer') {
+      if (msg.question) {
         showTab('chat');
+        addMessage(msg.question, 'user');
+        addMessage('Thinking...', 'noah thinking', 'external-thinking');
+      }
+      if (msg.answer) {
+        const t = document.getElementById('external-thinking');
+        if (t) { t.remove(); }
         addMessage(msg.answer, 'noah');
       }
-      setTimeout(() => status.classList.remove('show'), 3000);
+    }
+
+        if (msg.type === 'fixProposal') {
+      if (msg.question) {
+        showTab('chat');
+        addMessage(msg.question, 'user');
+        addMessage('Analyzing code...', 'noah thinking', 'fix-thinking');
+      }
+      if (msg.answer) {
+        const t = document.getElementById('fix-thinking');
+        if (t) { t.remove(); }
+        addMessage(msg.answer, 'noah');
+
+        const re = new RegExp('FIXED CODE[^\\n]*\\n([\\s\\S]+?)(?:\\n\\n|$)', 'i');
+        const fixMatch = msg.answer.match(re);
+        let fixedCode = fixMatch ? fixMatch[1].trim() : null;
+        if (fixedCode) {
+          fixedCode = fixedCode.replace(new RegExp('^[\\w]*\\n'), '').replace(new RegExp('\\n?$'), '').trim();
+        }
+
+        if (fixedCode) {
+          const msgs = document.getElementById('chat-messages');
+          const row = document.createElement('div');
+          row.className = 'fix-actions';
+
+          const applyBtn = document.createElement('button');
+          applyBtn.className = 'btn';
+          applyBtn.textContent = 'Apply fix';
+          applyBtn.onclick = () => {
+            vscode.postMessage({
+              type: 'applyFix',
+              fixedCode: fixedCode,
+              filePath: msg.filePath,
+              selectionStart: msg.selectionStart,
+              selectionEnd: msg.selectionEnd
+            });
+            applyBtn.textContent = 'Applied!';
+            applyBtn.disabled = true;
+            dismissBtn.disabled = true;
+          };
+
+          const dismissBtn = document.createElement('button');
+          dismissBtn.className = 'btn secondary';
+          dismissBtn.textContent = 'Dismiss';
+          dismissBtn.onclick = () => { row.remove(); };
+
+          row.appendChild(applyBtn);
+          row.appendChild(dismissBtn);
+          msgs.appendChild(row);
+          msgs.scrollTop = msgs.scrollHeight;
+        }
+      }
     }
   });
 </script>

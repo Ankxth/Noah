@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-
+import os
 IGNORED_DIRS = {'.noah', '.git', '__pycache__', 'node_modules', 'venv', 'dist'}
 WATCHED_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.go', '.rs', '.java', '.cpp', '.c', '.rb'}
 
@@ -30,14 +30,13 @@ class NoahFileHandler(FileSystemEventHandler):
                 ["git", "diff", "HEAD", str(path)],
                 cwd=self.project_root,
                 capture_output=True,
-                text=True,
-                timeout=5
+                timeout=5,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"}
             )
-            diff = result.stdout.strip()
+            diff = result.stdout.decode("utf-8", errors="ignore").strip()
             if not diff:
-                # File might be untracked — show the content instead
                 try:
-                    diff = path.read_text(errors="ignore")[:1500]
+                    diff = path.read_text(encoding="utf-8", errors="ignore")[:1500]
                 except:
                     diff = ""
             return diff

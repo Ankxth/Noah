@@ -10,4 +10,6 @@ print("watch me")
 
 print("Bro i am done")
 
-print("This is a test file")
+prit("This is a test file")
+
+NOAH_PROJECT_ROOT="/d/Project Noah/noah" python server.py
