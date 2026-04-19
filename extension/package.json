@@ -1,0 +1,64 @@
+{
+  "name": "noah",
+  "displayName": "Noah",
+  "description": "AI coding companion that learns your codebase",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "noah.ask",
+        "title": "Ask Noah"
+      },
+      {
+        "command": "noah.showPanel",
+        "title": "Noah: Open Panel"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "noah-sidebar",
+          "title": "Noah",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "noah-sidebar": [
+        {
+          "type": "webview",
+          "id": "noah.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Noah",
+      "properties": {
+        "noah.daemonUrl": {
+          "type": "string",
+          "default": "http://localhost:7878",
+          "description": "URL of the Noah daemon"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "20.x",
+    "typescript": "^5.4.0",
+    "@typescript-eslint/eslint-plugin": "^8.3.0",
+    "@typescript-eslint/parser": "^8.3.0",
+    "eslint": "^9.9.1"
+  }
+}
